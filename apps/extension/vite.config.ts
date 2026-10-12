@@ -22,27 +22,32 @@ export default defineConfig({
 
         // chrome.scripting.executeScript({ files }) loads classic scripts, so
         // capture must not inherit Vite's shared ESM chunks.
-        const capture = await buildStandaloneScript({
-          entryPoints: [fileURLToPath(new URL("./src/capture.ts", import.meta.url))],
-          outfile: "capture.js",
-          bundle: true,
-          format: "iife",
-          platform: "browser",
-          target: "es2022",
-          minify: true,
-          write: false,
-        });
-        this.emitFile({
-          type: "asset",
-          fileName: "assets/capture.js",
-          source: capture.outputFiles[0].contents,
-        });
+        for (const name of ["capture", "capture-platform", "social-target"]) {
+          const capture = await buildStandaloneScript({
+            entryPoints: [fileURLToPath(new URL(`./src/${name}.ts`, import.meta.url))],
+            outfile: `${name}.js`,
+            bundle: true,
+            format: "iife",
+            platform: "browser",
+            target: "es2022",
+            minify: true,
+            write: false,
+          });
+          this.emitFile({
+            type: "asset",
+            fileName: `assets/${name}.js`,
+            source: capture.outputFiles[0].contents,
+          });
+        }
       },
     },
   ],
   build: {
     outDir: target === "firefox" ? "dist-firefox" : "dist",
     emptyOutDir: true,
+    // Chromium cannot reuse these extension-page preloads across worlds.
+    // Load the local chunks through their regular module imports instead.
+    modulePreload: false,
     rollupOptions: {
       input: {
         popup: fileURLToPath(new URL("./popup.html", import.meta.url)),

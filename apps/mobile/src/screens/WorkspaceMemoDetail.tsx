@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_MEMO_TITLE, parseDiagramDocument, type MemoDetail, type Notebook, type TiptapDoc } from "@edgeever/shared";
 import {
+  NOTE_IMAGE_THEMES,
   type NoteImageTheme,
   type NoteImageFontStyle,
   type NoteImageFontSize,
@@ -19,9 +20,11 @@ import { Alert, Pressable, Text, TextInput } from "../components/LocalizedText";
 import LocalTiptapEditor, { type LocalTiptapEditorRef } from "../components/LocalTiptapEditor";
 import { MobileAiAssistantModal } from "../components/MobileAiAssistantModal";
 import { MobileResourceActions } from "../components/MobileResourceActions";
+import { ZoomableImagePreview } from "../components/ZoomableImagePreview";
+import type { ImageSize } from "../lib/mobile-image-zoom";
 import { SAFE_DOM_WEBVIEW_PROPS } from "../lib/mobile-dom";
 import { getNextMobileNoteSearchIndex } from "../lib/mobile-note-search";
-import { hasMobileInfographic, hasMobileStructuredTable, hasMobileVisualDiagram, resolveMobileMemoViewerContent } from "../lib/mobile-diagram";
+import { hasMobilePoster, hasMobileInfographic, hasMobileStructuredTable, hasMobileVisualDiagram, resolveMobileMemoViewerContent } from "../lib/mobile-diagram";
 import { safeDomCall } from "../lib/safe-dom-call";
 import {
   getMobileImageTarget,
@@ -215,18 +218,18 @@ const MOBILE_THEME_OPTIONS: Array<{
   labelZh: string;
   labelEn: string;
   previewBg: string;
-  dotColor: string;
 }> = [
-  { id: "aurora", labelZh: "极光渐变", labelEn: "Aurora", previewBg: "#a7f3d0", dotColor: "#0d9488" },
-  { id: "sunset", labelZh: "暮色晚霞", labelEn: "Sunset", previewBg: "#fde68a", dotColor: "#ea580c" },
-  { id: "midnight", labelZh: "暗夜曜石", labelEn: "Midnight", previewBg: "#090d16", dotColor: "#34d399" },
-  { id: "mint", labelZh: "薄荷", labelEn: "Mint", previewBg: "#ecfdf5", dotColor: "#059669" },
-  { id: "lavender", labelZh: "紫雾流光", labelEn: "Lavender", previewBg: "#f5f3ff", dotColor: "#7c3aed" },
-  { id: "notepad", labelZh: "经典便签", labelEn: "Notepad", previewBg: "#fbf7ee", dotColor: "#c2410c" },
-  { id: "xuan", labelZh: "水墨宣纸", labelEn: "Rice Paper", previewBg: "#f7f6f2", dotColor: "#b91c1c" },
+  { id: "slate", labelZh: "纯白", labelEn: "Pure White", previewBg: "#ffffff" },
+  { id: "mint", labelZh: "薄荷", labelEn: "Mint", previewBg: "#ecfdf5" },
+  { id: "aurora", labelZh: "极光渐变", labelEn: "Aurora", previewBg: "#a7f3d0" },
+  { id: "sunset", labelZh: "暮色晚霞", labelEn: "Sunset", previewBg: "#fde68a" },
+  { id: "editorial", labelZh: "黑白编辑", labelEn: "Black & White", previewBg: "#f1f3f5" },
+  { id: "terminal", labelZh: "极客终端", labelEn: "Terminal", previewBg: "#0d1117" },
+  { id: "film", labelZh: "书页", labelEn: "Book Page", previewBg: "#f4ede4" },
 ];
 
 const MOBILE_FONT_OPTIONS: Array<{ id: NoteImageFontStyle; labelZh: string; labelEn: string }> = [
+  { id: "auto", labelZh: "跟随主题", labelEn: "Follow Theme" },
   { id: "serif", labelZh: "文艺衬线", labelEn: "Serif" },
   { id: "sans", labelZh: "现代无衬线", labelEn: "Sans" },
   { id: "mono", labelZh: "极客等宽", labelEn: "Mono" },
@@ -238,6 +241,8 @@ const AuthenticatedResourceImage = ({
   href,
   loadResourceBlob,
   onLoadFailure,
+  onDimensions,
+  resizeMultiplier,
   resizeMode = "cover",
   session,
   style,
@@ -247,6 +252,8 @@ const AuthenticatedResourceImage = ({
   href: string;
   loadResourceBlob?: ((resourceUrl: string) => Promise<Blob>) | null;
   onLoadFailure?: (failure: ProtectedResourceLoadFailure) => void;
+  onDimensions?: (size: ImageSize) => void;
+  resizeMultiplier?: number;
   resizeMode?: "center" | "contain" | "cover" | "repeat" | "stretch";
   session: SessionLike;
   style: StyleProp<ImageStyle>;
@@ -306,6 +313,7 @@ const AuthenticatedResourceImage = ({
         }
         if (result.aspectRatio) {
           setAspectRatio(result.aspectRatio);
+          onDimensions?.({ width: result.aspectRatio * 1000, height: 1000 });
         }
         setSvgXml(result.xml);
       });
@@ -315,7 +323,7 @@ const AuthenticatedResourceImage = ({
         svgSourceKeyRef.current = "";
       }
     };
-  }, [svgSourceKey]);
+  }, [svgSourceKey, onDimensions]);
 
   const loadSvgFallback = () => {
     if (svgRequestStartedRef.current || !displaySource) {
@@ -329,6 +337,7 @@ const AuthenticatedResourceImage = ({
         }
         if (result.aspectRatio) {
           setAspectRatio(result.aspectRatio);
+          onDimensions?.({ width: result.aspectRatio * 1000, height: 1000 });
         }
         setSvgXml(result.xml);
       });
@@ -363,10 +372,13 @@ const AuthenticatedResourceImage = ({
         const { height, width } = event.nativeEvent.source;
         if (height > 0 && width > 0) {
           setAspectRatio(width / height);
+          onDimensions?.({ width, height });
         }
       }}
       onError={loadSvgFallback}
       resizeMethod={Platform.OS === "android" ? "resize" : "auto"}
+      // Supported by Android's native Image view; RN 0.86's TS interface omits it.
+      {...(Platform.OS === "android" && resizeMultiplier ? { resizeMultiplier } : {})}
       resizeMode={resizeMode}
       source={displaySource}
       style={imageStyle}
@@ -507,8 +519,8 @@ export const MemoDetailModal = ({
   const [imageExportStage, setImageExportStage] = useState<"prepare" | "render" | "transfer">("prepare");
   const [imageShareOptionsOpen, setImageShareOptionsOpen] = useState(false);
   const [imageShareFormat, setImageShareFormat] = useState<"jpeg" | "png">("png");
-  const [imageShareTheme, setImageShareTheme] = useState<NoteImageTheme>("aurora");
-  const [imageShareFontStyle, setImageShareFontStyle] = useState<NoteImageFontStyle>("serif");
+  const [imageShareTheme, setImageShareTheme] = useState<NoteImageTheme>("mint");
+  const [imageShareFontStyle, setImageShareFontStyle] = useState<NoteImageFontStyle>("auto");
   const [imageShareFontSize, setImageShareFontSize] = useState<NoteImageFontSize>("lg");
   const [imageShareCardWidth, setImageShareCardWidth] = useState<NoteImageCardWidth>("wide");
   const [imageShareTitle, setImageShareTitle] = useState(true);
@@ -517,6 +529,10 @@ export const MemoDetailModal = ({
   const [imageShareUpdatedAt, setImageShareUpdatedAt] = useState(true);
   const [imageShareBranding, setImageShareBranding] = useState(true);
   const [viewerNotebookPickerOpen, setViewerNotebookPickerOpen] = useState(false);
+  const [viewerTagsOpen, setViewerTagsOpen] = useState(false);
+  const [viewerTags, setViewerTags] = useState<string[]>([]);
+  const [viewerNotebookId, setViewerNotebookId] = useState("");
+  const [metadataSaving, setMetadataSaving] = useState(false);
   const [preparedNoteImage, setPreparedNoteImage] = useState<MobilePreparedNoteImage | null>(null);
   const [imageSavePickerOpen, setImageSavePickerOpen] = useState(false);
   const [savedImagePath, setSavedImagePath] = useState<string | null>(null);
@@ -551,7 +567,7 @@ export const MemoDetailModal = ({
     () => (memo ? hasMobileStructuredTable(memo.contentMarkdown) : false),
     [memo]
   );
-  const locksRichTextEdit = isVisualDiagram || isStructuredTable || Boolean(memo && hasMobileInfographic(memo.contentMarkdown));
+  const locksRichTextEdit = isVisualDiagram || isStructuredTable || Boolean(memo && (hasMobileInfographic(memo.contentMarkdown) || hasMobilePoster(memo.contentMarkdown)));
   const visualDiagramJson = useMemo(() => {
     const diagram = memo ? parseDiagramDocument(memo.contentMarkdown) : null;
     return diagram ? JSON.stringify(diagram) : undefined;
@@ -597,17 +613,31 @@ export const MemoDetailModal = ({
   }, [baseUrl, client, resolvedLocale, session?.token]);
   const handleViewerNotebookSelect = useCallback((nextNotebookId: string) => {
     setViewerNotebookPickerOpen(false);
-    if (
-      !memo
-      || memo.isDeleted
-      || !nextNotebookId
-      || nextNotebookId === "all"
-      || nextNotebookId === memo.notebookId
-    ) {
+    if (nextNotebookId && nextNotebookId !== "all") setViewerNotebookId(nextNotebookId);
+    setViewerTagsOpen(true);
+  }, []);
+  const openViewerTags = () => {
+    if (!memo || memo.isDeleted || isSaving) return;
+    setViewerTags([...memo.tags]);
+    setViewerNotebookId(memo.notebookId);
+    setViewerTagsOpen(true);
+  };
+  const saveViewerMetadata = async () => {
+    if (!memo || memo.isDeleted || metadataSaving || isSaving) return;
+    if (viewerNotebookId === memo.notebookId && viewerTags.join("\n") === memo.tags.join("\n")) {
+      setViewerTagsOpen(false);
       return;
     }
-    updateMutation.mutate({ memo, payload: { notebookId: nextNotebookId } });
-  }, [memo, updateMutation]);
+    setMetadataSaving(true);
+    try {
+      await updateMutation.mutateAsync({ memo, payload: { notebookId: viewerNotebookId, tags: viewerTags } });
+      setViewerTagsOpen(false);
+    } catch (error) {
+      Alert.alert("保存失败", error instanceof Error ? error.message : "请重试");
+    } finally {
+      setMetadataSaving(false);
+    }
+  };
 
   const saveResourceAs = useCallback(async (target: MobileResourceTarget) => {
     if (!client) throw new Error(resolvedLocale !== "zh-CN" ? "The resource client is unavailable." : "当前无法读取资源。");
@@ -700,8 +730,8 @@ export const MemoDetailModal = ({
     Platform.OS === "android" ? ANDROID_SYSTEM_NAVIGATION_FALLBACK : 0
   ) + 16;
 
-  const handleReaderScroll = useCallback(async (scrollTop: number) => {
-    setTitleCollapsed(scrollTop > 24);
+  const handleReaderScroll = useCallback(async (collapsed: boolean) => {
+    setTitleCollapsed(collapsed);
   }, []);
 
   useEffect(() => {
@@ -744,6 +774,7 @@ export const MemoDetailModal = ({
     setImagePreview(null);
     setAiAssistantOpen(false);
     setViewerNotebookPickerOpen(false);
+    setViewerTagsOpen(false);
     safeDomCall(() => viewerRef.current?.search("", -1));
   }, [isEditing]);
 
@@ -758,6 +789,7 @@ export const MemoDetailModal = ({
     setImagePreview(null);
     setResourceTarget(null);
     setViewerNotebookPickerOpen(false);
+    setViewerTagsOpen(false);
     resourceDataUrlCacheRef.current.clear();
   }, [initialSearchQuery, memo?.id]);
 
@@ -968,8 +1000,8 @@ export const MemoDetailModal = ({
       notebook: options.showNotebook === false ? "" : notebookName,
       tags: options.showTags === false ? [] : memo.tags,
       updatedAt: options.showUpdatedAt === false ? "" : new Date(memo.updatedAt).toLocaleString(resolvedLocale),
-      theme: options.theme ?? "aurora",
-      fontStyle: options.fontStyle ?? "serif",
+      theme: options.theme ?? "mint",
+      fontStyle: options.fontStyle ?? "auto",
       fontSize: options.fontSize ?? "lg",
       cardWidth: options.cardWidth ?? "wide",
       showTitle: options.showTitle ?? true,
@@ -1129,6 +1161,19 @@ export const MemoDetailModal = ({
             </Pressable>
             {memo && !memo.isDeleted ? (
               <Pressable
+                accessibilityLabel="选择笔记标签"
+                accessibilityHint="点选已有标签，或输入名称创建新标签"
+                accessibilityRole="button"
+                disabled={isSaving}
+                hitSlop={6}
+                onPress={openViewerTags}
+                style={styles.detailHeaderIconButton}
+              >
+                <Tag color={memo.tags.length > 0 ? "#16A06E" : "#475569"} size={20} />
+              </Pressable>
+            ) : null}
+            {memo && !memo.isDeleted ? (
+              <Pressable
                 accessibilityLabel="搜索当前笔记"
                 accessibilityRole="button"
                 onPress={() => setSearchOpen(true)}
@@ -1286,6 +1331,7 @@ export const MemoDetailModal = ({
                   text={memoTitle}
                 />
               )}
+              {searchOpen || memo.isDeleted ? (
               <View style={styles.detailMetaRow}>
                 {memo.isDeleted ? (
                 <View style={styles.detailNotebookButton}>
@@ -1299,7 +1345,7 @@ export const MemoDetailModal = ({
                   accessibilityRole="button"
                   disabled={isSaving}
                   hitSlop={8}
-                  onPress={() => setViewerNotebookPickerOpen(true)}
+                  onPress={openViewerTags}
                   style={styles.detailNotebookButton}
                 >
                   <Text numberOfLines={1} style={styles.detailNotebookName}>{notebookName}</Text>
@@ -1317,6 +1363,7 @@ export const MemoDetailModal = ({
                   />
                 </View>
               </View>
+              ) : null}
               {searchOpen ? (
                 <View style={styles.noteSearchPanel}>
                   <Search color="#64748b" size={16} />
@@ -1589,6 +1636,7 @@ export const MemoDetailModal = ({
                     <Pressable
                       key={item.id}
                       accessibilityRole="button"
+                      accessibilityState={{ selected: isSelected }}
                       onPress={() => setImageShareTheme(item.id)}
                       style={[
                         imageShareStyles.themeCard,
@@ -1596,8 +1644,12 @@ export const MemoDetailModal = ({
                         isSelected && imageShareStyles.themeCardActive,
                       ]}
                     >
-                      <View style={[imageShareStyles.themeDot, { backgroundColor: item.dotColor }]} />
-                      <Text numberOfLines={1} style={[imageShareStyles.themeLabel, isSelected && imageShareStyles.themeLabelActive]}>
+                      <View accessibilityElementsHidden style={{ width: 46, padding: 5, borderRadius: 3, backgroundColor: NOTE_IMAGE_THEMES[item.id].cardBg, borderWidth: 1, borderColor: NOTE_IMAGE_THEMES[item.id].dividerColor }}>
+                        <View style={{ height: 3, width: 28, backgroundColor: NOTE_IMAGE_THEMES[item.id].headingColor, marginBottom: 4 }} />
+                        <View style={{ height: 2, width: 32, backgroundColor: NOTE_IMAGE_THEMES[item.id].textColor, marginBottom: 4 }} />
+                        <View style={{ height: 6, borderLeftWidth: 2, borderLeftColor: NOTE_IMAGE_THEMES[item.id].quoteBorder, backgroundColor: NOTE_IMAGE_THEMES[item.id].quoteBg }} />
+                      </View>
+                      <Text numberOfLines={1} style={[imageShareStyles.themeLabel, { color: NOTE_IMAGE_THEMES[item.id].textColor }, isSelected && imageShareStyles.themeLabelActive]}>
                         {label}
                       </Text>
                     </Pressable>
@@ -1728,11 +1780,10 @@ export const MemoDetailModal = ({
         <Modal animationType="fade" onRequestClose={() => setImagePreview(null)} transparent visible={Boolean(imagePreview)}>
           <View style={resourceImageStyles.previewBackdrop}>
             {imagePreview ? (
-              <Pressable
+              <ZoomableImagePreview
+                key={imagePreview.source}
                 accessibilityHint={resolvedLocale !== "zh-CN" ? "Long press for image actions" : "长按打开图片操作"}
                 accessibilityLabel={imagePreview.alt || (resolvedLocale !== "zh-CN" ? "Image preview" : "图片预览")}
-                accessibilityRole="image"
-                delayLongPress={400}
                 onLongPress={() => {
                   // Long-press fullscreen preview → same resource sheet as ⋯ in the note.
                   const target = getMobileImageTarget(imagePreview.source, imagePreview.alt);
@@ -1740,18 +1791,20 @@ export const MemoDetailModal = ({
                     setResourceTarget(target);
                   }
                 }}
-                style={resourceImageStyles.previewImagePressable}
-              >
-                <AuthenticatedResourceImage
-                  alt={imagePreview.alt}
-                  href={imagePreview.source}
-                  loadResourceBlob={client?.getResourceBlob}
-                  onLoadFailure={imageLoadFailureNotifier}
-                  resizeMode="contain"
-                  session={session}
-                  style={resourceImageStyles.previewImage}
-                />
-              </Pressable>
+                renderImage={(onDimensions, resizeMultiplier) => (
+                  <AuthenticatedResourceImage
+                    alt={imagePreview.alt}
+                    href={imagePreview.source}
+                    loadResourceBlob={client?.getResourceBlob}
+                    onLoadFailure={imageLoadFailureNotifier}
+                    onDimensions={onDimensions}
+                    resizeMultiplier={resizeMultiplier}
+                    resizeMode="contain"
+                    session={session}
+                    style={resourceImageStyles.previewImage}
+                  />
+                )}
+              />
             ) : null}
             <Pressable
               accessibilityLabel={resolvedLocale !== "zh-CN" ? "Close image preview" : "关闭图片预览"}
@@ -1817,14 +1870,54 @@ export const MemoDetailModal = ({
             {editor.uploadSourcePicker}
           </>
         ) : (
+          <>
+          <TagPickerModal
+            dataScope={createMobileDataScope(session?.baseUrl ?? baseUrl, session?.user?.id)}
+            disabled={metadataSaving}
+            headerContent={(
+              <Pressable
+                accessibilityLabel="所在笔记本"
+                accessibilityRole="button"
+                disabled={metadataSaving}
+                onPress={() => {
+                  setViewerTagsOpen(false);
+                  setViewerNotebookPickerOpen(true);
+                }}
+                style={styles.detailNotebookButton}
+              >
+                <Text numberOfLines={1} style={styles.detailNotebookName}>
+                  {notebooks.find((notebook) => notebook.id === viewerNotebookId)?.name ?? notebookName}
+                </Text>
+                <ChevronDown color="#64748b" size={14} />
+              </Pressable>
+            )}
+            footerContent={(
+              <View style={detailLayoutStyles.metadataActions}>
+                <Pressable accessibilityRole="button" disabled={metadataSaving} onPress={() => setViewerTagsOpen(false)} style={[styles.createMemoDoneButton, detailLayoutStyles.metadataCancel]}>
+                  <Text style={[styles.createMemoDoneText, detailLayoutStyles.metadataCancelText]}>取消</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" disabled={metadataSaving || isSaving} onPress={() => void saveViewerMetadata()} style={[styles.createMemoDoneButton, (metadataSaving || isSaving) && styles.createMemoDoneButtonDisabled]}>
+                  <Text style={[styles.createMemoDoneText, (metadataSaving || isSaving) && styles.createMemoDoneTextDisabled]}>{metadataSaving ? "保存中" : "保存"}</Text>
+                </Pressable>
+              </View>
+            )}
+            onChange={setViewerTags}
+            onClose={() => { if (!metadataSaving) setViewerTagsOpen(false); }}
+            selectedTags={viewerTags}
+            visible={viewerTagsOpen}
+          />
           <NotebookPickerModal
-            activeNotebookId={memo?.notebookId ?? ""}
+            activeNotebookId={viewerNotebookId}
             includeAllNotes={false}
             notebooks={notebooks}
-            onClose={() => setViewerNotebookPickerOpen(false)}
+            onClose={() => {
+              setViewerNotebookPickerOpen(false);
+              setViewerTagsOpen(true);
+            }}
             onSelect={handleViewerNotebookSelect}
             visible={viewerNotebookPickerOpen}
           />
+          </>
         )}
       </SafeAreaView>
       ) : null}
@@ -1854,10 +1947,10 @@ const imageShareStyles = StyleSheet.create({
     gap: 8,
   },
   themeCard: {
-    width: "23%",
-    minWidth: 70,
+    width: "47%",
+    minWidth: 120,
     flexGrow: 1,
-    flexDirection: "row",
+    flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -1871,18 +1964,12 @@ const imageShareStyles = StyleSheet.create({
     borderColor: "#16A06E",
     borderWidth: 2,
   },
-  themeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
   themeLabel: {
     color: "#334155",
     fontSize: 12,
     fontWeight: "600",
   },
   themeLabelActive: {
-    color: "#0f172a",
     fontWeight: "700",
   },
   choice: {
@@ -2072,6 +2159,19 @@ const imageShareStyles = StyleSheet.create({
 });
 
 const detailLayoutStyles = StyleSheet.create({
+  metadataCancel: {
+    backgroundColor: "#f1f5f9",
+  },
+  metadataCancelText: {
+    color: "#475569",
+  },
+  metadataActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
   body: {
     flex: 1,
     minHeight: 0,
@@ -2129,11 +2229,6 @@ const resourceImageStyles = StyleSheet.create({
     width: 46,
   },
   previewImage: {
-    height: "100%",
-    width: "100%",
-  },
-  previewImagePressable: {
-    flex: 1,
     height: "100%",
     width: "100%",
   },

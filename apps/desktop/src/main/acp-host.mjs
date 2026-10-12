@@ -11,6 +11,7 @@ import { waitForChildProcessSpawn } from "./child-process-start.mjs";
 import { createAcpAdapterManager } from "./acp-adapter-manager.mjs";
 import { startAcpMcpBridge } from "./acp-mcp-bridge.mjs";
 import { withAntigravityMacProxy } from "./antigravity-proxy.mjs";
+import { authenticateWorkBuddy, prepareWorkBuddyAuth } from "./workbuddy-auth.mjs";
 
 const ADAPTERS = {
   codex: { id: "codex", label: "Codex" },
@@ -119,6 +120,7 @@ const resolutionDeps = (deps = {}) => ({
   access: deps.accessSync ?? accessSync,
   realpath: deps.realpathSync ?? realpathSync,
   stat: deps.statSync ?? statSync,
+  exists: deps.existsSync ?? existsSync,
   pathEnv: deps.pathEnv ?? process.env.PATH ?? "",
   delimiter: deps.delimiter ?? path.delimiter,
   sep: deps.sep ?? path.sep,
@@ -203,6 +205,12 @@ function resolveWorkBuddy(id, deps) {
       const actual = deps.realpath(candidate);
       if (!deps.stat(actual).isFile()) continue;
       deps.access(actual, fsConstants.R_OK);
+      if (deps.platform === "darwin") {
+        const executable = path.resolve(path.dirname(actual), "../../../../MacOS/Electron");
+        if (deps.exists(executable)) {
+          return { ok: true, command: workBuddyCommand(executable, actual, id, true) };
+        }
+      }
       return { ok: true, command: workBuddyCommand(deps.executablePath, actual, id) };
     } catch { /* Try another installed WorkBuddy application. */ }
   }
@@ -212,10 +220,10 @@ function resolveWorkBuddy(id, deps) {
     : { ok: false, state: "not_installed" };
 }
 
-function workBuddyCommand(executablePath, bundledCli, id) {
+function workBuddyCommand(executablePath, bundledCli, id, nativeBootstrap = false) {
   const edition = id === "workbuddyCn" ? { CODEBUDDY_INTERNET_ENVIRONMENT: "internal" } : {};
   return bundledCli
-    ? { command: executablePath, args: [bundledCli, "--acp"], env: { ...edition, ELECTRON_RUN_AS_NODE: "1" }, ...(id === "workbuddyIntl" ? { unsetEnv: ["CODEBUDDY_INTERNET_ENVIRONMENT"] } : {}) }
+    ? { command: executablePath, args: [...(nativeBootstrap ? [fileURLToPath(new URL("./workbuddy-launch.cjs", import.meta.url))] : []), bundledCli, "--acp"], env: { ...edition, ELECTRON_RUN_AS_NODE: "1" }, ...(id === "workbuddyIntl" ? { unsetEnv: ["CODEBUDDY_INTERNET_ENVIRONMENT"] } : {}) }
     : { command: executablePath, args: ["--acp"], env: edition, ...(id === "workbuddyIntl" ? { unsetEnv: ["CODEBUDDY_INTERNET_ENVIRONMENT"] } : {}) };
 }
 
@@ -692,6 +700,7 @@ export function createAcpHostRuntime(options = {}) {
   const rmImpl = options.rm ?? rm;
   const version = options.clientVersion ?? clientVersion();
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+  const authenticationTimeoutMs = options.authenticationTimeoutMs ?? 5 * 60_000;
   const commandDeps = options;
   const manager = options.adapterManager ?? (options.adapterStore ? createAcpAdapterManager({ root: options.adapterStore, executablePath: options.executablePath }) : null);
   const active = new Map();
@@ -721,10 +730,11 @@ export function createAcpHostRuntime(options = {}) {
     return adapt(resolveAcpCommand(input, commandDeps));
   };
 
-  const connect = async (command, requestId, emit, signal, authMethodId, mcpServers = [], allowPermissions = false) => {
+  const connect = async (command, requestId, emit, signal, authMethodId, mcpServers = [], allowPermissions = false, workBuddyAuth = null, verifyWorkBuddy = false) => {
     const cwd = await createAcpWorkspace(mkdtempImpl, options.tmpRoot);
     let child = null;
     let authMethods = [];
+    let authenticationPending = false;
     const abort = () => stopChild(child);
     signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -736,9 +746,20 @@ export function createAcpHostRuntime(options = {}) {
       void connection.closed?.catch(() => {});
       const initialized = await connection.initialize(acpInitializeParams(version));
       authMethods = publicAuthMethods(initialized);
+      const readCredential = async () => {
+        const result = await connection.extMethod("_codebuddy.ai/getUserInfo", {});
+        const token = result?.userInfo?.accessToken ?? result?.userInfo?.token;
+        // The bundled CLI can restore account metadata without decrypting tokens.
+        if (result?.userInfo && !(typeof token === "string" && token)) throw new Error("workbuddy_credentials_unavailable");
+        return typeof token === "string" && token ? createHash("sha256").update(token).digest("hex") : null;
+      };
+      if (verifyWorkBuddy) await readCredential();
       if (authMethodId) {
         if (!authMethods.some((method) => method.id === authMethodId)) throw new Error("invalid_auth_method");
-        await connection.authenticate({ methodId: authMethodId });
+        authenticationPending = true;
+        if (workBuddyAuth) await authenticateWorkBuddy(workBuddyAuth, authMethodId, signal, { readCredential });
+        else await connection.authenticate({ methodId: authMethodId });
+        authenticationPending = false;
       }
       const session = await connection.newSession({ cwd, mcpServers });
       if (signal?.aborted) throw Object.assign(new Error("connection_timeout"), { code: "TIMEOUT" });
@@ -753,6 +774,7 @@ export function createAcpHostRuntime(options = {}) {
       };
     } catch (error) {
       if (authMethods.length && error && typeof error === "object") error.authMethods = authMethods;
+      if (authenticationPending && error && typeof error === "object") error.authenticationPending = true;
       abort();
       await removeAcpWorkspace(cwd, rmImpl);
       throw error;
@@ -769,7 +791,7 @@ export function createAcpHostRuntime(options = {}) {
       return await operation(controller.signal);
     } catch (error) {
       if (controller.signal.aborted && !isAuthRequiredError(error) && error?.code !== "ENOENT") {
-        throw Object.assign(new Error("connection_timeout"), { code: "TIMEOUT" });
+        throw Object.assign(new Error("connection_timeout"), { code: "TIMEOUT", authMethods: error?.authMethods, authenticationPending: error?.authenticationPending });
       }
       throw error;
     } finally {
@@ -783,7 +805,7 @@ export function createAcpHostRuntime(options = {}) {
         if (installingIds.has(id)) return { ...adapterShell(id), state: "installing" };
         const resolved = resolveCommand({ id }, { prepareProxy: false });
         return resolved.ok
-          ? { ...adapterShell(id), ...(latestStatus.get(id) ?? { state: "failed", detail: "not_probed" }), ...(resolved.version ? { version: resolved.version, managed: true } : {}), ...(updateFailures.has(id) ? { updateError: updateFailures.get(id) } : {}) }
+          ? { ...adapterShell(id), ...(latestStatus.get(id) ?? { state: "not_probed", detail: "not_probed" }), ...(resolved.version ? { version: resolved.version, managed: true } : {}), ...(updateFailures.has(id) ? { updateError: updateFailures.get(id) } : {}) }
           : adapterFromResolution(id, resolved);
       });
     },
@@ -860,7 +882,7 @@ export function createAcpHostRuntime(options = {}) {
       if (!resolved.ok) return adapterFromResolution(id, resolved);
       let connected;
       try {
-        connected = await withHandshakeTimeout((signal) => connect(resolved.command, `probe-${id}`, () => {}, signal));
+        connected = await withHandshakeTimeout((signal) => connect(resolved.command, `probe-${id}`, () => {}, signal, undefined, [], false, null, id === "workbuddyCn" || id === "workbuddyIntl"));
       } catch (error) {
         const failure = { ...adapterShell(id), ...failureFields(classifyAcpFailure(error)), ...(isAuthRequiredError(error) ? { authMethods: error.authMethods ?? [] } : {}), ...(resolved.version ? { version: resolved.version, managed: true } : {}) };
         latestStatus.set(id, failure);
@@ -887,12 +909,30 @@ export function createAcpHostRuntime(options = {}) {
       if (!resolved.ok) return adapterFromResolution(id, resolved);
       let connected;
       try {
-        connected = await withHandshakeTimeout((signal) => connect(resolved.command, `auth-${id}`, () => {}, signal, input.methodId), 5 * 60_000);
+        connected = await withHandshakeTimeout(async (signal) => {
+          const workBuddyAuth = id === "workbuddyCn" || id === "workbuddyIntl" ? await prepareWorkBuddyAuth(resolved.command) : null;
+          return connect(workBuddyAuth?.command ?? resolved.command, `auth-${id}`, () => {}, signal, input.methodId, [], false, workBuddyAuth);
+        }, authenticationTimeoutMs);
+        if (id === "workbuddyCn" || id === "workbuddyIntl") {
+          connected.stop();
+          await removeAcpWorkspace(connected.cwd, rmImpl);
+          connected = null;
+          // Login is useful only if a fresh chat process can restore credentials.
+          connected = await withHandshakeTimeout((signal) => connect(resolved.command, `auth-check-${id}`, () => {}, signal, undefined, [], false, null, true));
+        }
         const adapter = { ...adapterShell(id), state: "available", promptCapabilities: connected.promptCapabilities, authMethods: connected.authMethods, ...(resolved.version ? { version: resolved.version, managed: true } : {}) };
         latestStatus.set(id, adapter);
         return adapter;
       } catch (error) {
-        return { ...adapterShell(id), ...failureFields(classifyAcpFailure(error)), ...(isAuthRequiredError(error) ? { authMethods: error.authMethods ?? [] } : {}), ...(resolved.version ? { version: resolved.version, managed: true } : {}) };
+        const timedOut = error?.code === "TIMEOUT" && error?.authenticationPending;
+        const adapter = {
+          ...adapterShell(id),
+          ...(timedOut ? { state: "needs_login", detail: "authentication_timeout" } : error?.message === "authentication_failed" ? { state: "needs_login", detail: "authentication_failed" } : failureFields(classifyAcpFailure(error))),
+          ...((timedOut || isAuthRequiredError(error)) ? { authMethods: error.authMethods ?? latestStatus.get(id)?.authMethods ?? [] } : {}),
+          ...(resolved.version ? { version: resolved.version, managed: true } : {}),
+        };
+        latestStatus.set(id, adapter);
+        return adapter;
       } finally {
         if (connected) {
           connected.stop();
@@ -912,6 +952,12 @@ export function createAcpHostRuntime(options = {}) {
       };
       const resolved = resolveCommand({ id: input.adapterId, path: input.path });
       if (!resolved.ok) return fail(promptFailureMessage(resolved));
+      const customPath = input.adapterId === "antigravity" && typeof input.path === "string" ? input.path.trim() : "";
+      const rememberPromptStatus = (fields) => latestStatus.set(input.adapterId, {
+        ...adapterShell(input.adapterId),
+        ...fields,
+        ...(customPath ? { customPath } : {}),
+      });
 
       let connected;
       let mcpBridge;
@@ -921,13 +967,27 @@ export function createAcpHostRuntime(options = {}) {
           const access = await options.mcpAccess();
           mcpBridge = await (options.startMcpBridge ?? startAcpMcpBridge)(access);
         }
+      } catch (error) {
+        return fail(promptFailureMessage(classifyAcpFailure(error)));
+      }
+      try {
         connected = await withHandshakeTimeout((signal) => connect(
           resolved.command, requestId, notify, signal, undefined,
-          mcpBridge ? [mcpServerFor(mcpBridge)] : [], true,
+          mcpBridge ? [mcpServerFor(mcpBridge)] : [], true, null, input.adapterId === "workbuddyCn" || input.adapterId === "workbuddyIntl",
         ));
+        rememberPromptStatus({
+          state: "available",
+          authMethods: connected.authMethods,
+          promptCapabilities: connected.promptCapabilities,
+        });
       } catch (error) {
+        const failure = classifyAcpFailure(error);
+        rememberPromptStatus({
+          ...failureFields(failure),
+          ...(failure.state === "needs_login" ? { authMethods: error.authMethods ?? [] } : {}),
+        });
         await mcpBridge?.close();
-        return fail(promptFailureMessage(classifyAcpFailure(error)));
+        return fail(promptFailureMessage(failure));
       }
 
       let content;
@@ -943,7 +1003,7 @@ export function createAcpHostRuntime(options = {}) {
         if (mcpBridge) {
           content.blocks.splice(input.adapterId === "codex" ? 1 : 0, 0, {
             type: "text",
-            text: "For EdgeEver note operations in this conversation, use only the session-provided MCP server named edgeever-current-workspace. It is connected to the account currently signed in to EdgeEver. Ignore any EdgeEver MCP server from your persistent configuration, which may target a different instance or account. When you create a note, include a clickable Markdown link to it in your final answer: [note title](#memo=exact_memo_id_from_tool_result). Do not show the note ID as plain text or use an https://edgeever.ai/memo/ URL; that URL opens an external website instead of the current workspace.",
+            text: "For EdgeEver note operations in this conversation, use only the session-provided MCP server named edgeever-current-workspace. It is connected to the account currently signed in to EdgeEver. Ignore any EdgeEver MCP server from your persistent configuration, which may target a different instance or account. For a request to generate a poster or 海报笔记, use create_poster_memo with concise copy; it produces the actual editable poster type. Never manually encode poster source, inspect local files to discover the format, or substitute poster-style Markdown. If the tool is unavailable or fails, report that clearly. To query posters, use search_memos or list_memos with poster=true rather than searching the title for 海报. For detailed design, read get_poster_capabilities for valid fields, fonts, platform sizes and operations. Read and edit a poster with get_poster then update_poster. apply_template replaces the layout and must be requested. get_poster_preview and export_poster provide saved previews and editable source, not fresh rendering. Request new PNG rendering or a full browser template with request_poster_render and expectedRevision; an online desktop/Web client handles it. Query get_poster_render_job no faster than every 5 seconds; only completed means rendered, then get_poster_preview. Pending means waiting for a client; report that honestly. Delete exact queried IDs with trash_memos; restore them with restore_memos. When you create a note, include a clickable Markdown link to it in your final answer: [note title](#memo=exact_memo_id_from_tool_result). Do not show the note ID as plain text or use an https://edgeever.ai/memo/ URL; that URL opens an external website instead of the current workspace.",
           });
         }
       } catch (error) {
@@ -973,7 +1033,7 @@ export function createAcpHostRuntime(options = {}) {
         if (session.cancelled) return finish({ requestId, type: "done" });
         const failure = promptResultFailure(result);
         if (failure === "needs_login") {
-          latestStatus.set(input.adapterId, { ...adapterShell(input.adapterId), state: "needs_login", authMethods: connected.authMethods });
+          rememberPromptStatus({ state: "needs_login", authMethods: connected.authMethods });
         }
         finish(failure ? { requestId, type: "error", message: failure } : { requestId, type: "done" });
       }).catch((error) => {
@@ -981,7 +1041,7 @@ export function createAcpHostRuntime(options = {}) {
         else {
           const failure = classifyAcpFailure(error);
           if (failure.state === "needs_login") {
-            latestStatus.set(input.adapterId, { ...adapterShell(input.adapterId), state: "needs_login", authMethods: connected.authMethods });
+            rememberPromptStatus({ state: "needs_login", authMethods: connected.authMethods });
           }
           finish({ requestId, type: "error", message: promptFailureMessage(failure) });
         }

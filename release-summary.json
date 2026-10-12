@@ -1,29 +1,20 @@
 {
-  "version": "1.102.0",
+  "version": "1.111.1",
   "changes": {
     "en-US": [
-      "Read and share notes more comfortably on Android and iOS, with improved tablet layout, note actions, and Mermaid diagrams.",
-      "Share note images in a wider Aurora layout, and improve Android image export, saving, and preview reliability.",
-      "Preview DOCX attachments on demand, show upload placeholders for attachments, and fix large file uploads on Android.",
-      "Configure a desktop-wide shortcut to show or hide EdgeEver, and improve installation of larger Antigravity AI adapters.",
-      "Refine dark mode and notebook selection, show member account dates, preserve new notebook selection after sync, and improve AI math display.",
-      "Expand the API and plugin development guides and add a Polish project overview."
+      "Explain why Inbox cannot be deleted in notebook menus and prevent the disabled action from changing notebook selection.",
+      "Use a consistent available status label for WorkBuddy in desktop agent settings.",
+      "Update application dependencies and fix known vulnerabilities in XML, ZIP, URI, CSS, SVG, and desktop agent package handling."
     ],
     "zh-CN": [
-      "改进 Android 与 iOS 的笔记阅读和分享：优化平板布局、笔记操作与 Mermaid 图表显示。",
-      "笔记图片分享默认使用更宽的 Aurora 样式，并提高 Android 图片导出、保存和预览的可靠性。",
-      "支持按需预览 DOCX 附件、在上传时显示附件占位，并修复 Android 大文件上传。",
-      "桌面端可设置全局快捷键以显示或隐藏 EdgeEver，并改进较大 Antigravity AI 适配器的安装。",
-      "调整深色模式和笔记本选中状态，显示成员账户时间；修复新建笔记本同步后的选中状态，并改善 AI 数学公式显示。",
-      "补充 API 与插件开发指南，并新增波兰语项目介绍。"
+      "笔记本菜单说明收件箱不可删除的原因，并修复点击禁用删除项时意外切换笔记本的问题。",
+      "统一桌面智能体设置中 WorkBuddy 的可用状态文案。",
+      "更新应用依赖，修复 XML、ZIP、URI、CSS、SVG 和桌面智能体软件包处理相关的已知安全漏洞。"
     ],
     "ja": [
-      "Android と iOS のノート閲覧・共有を改善し、タブレットのレイアウト、ノート操作、Mermaid 図の表示を調整しました。",
-      "ノート画像の共有で幅広の Aurora デザインを標準にし、Android での画像の書き出し、保存、プレビューを改善しました。",
-      "DOCX 添付ファイルのオンデマンドプレビューとアップロード中の表示を追加し、Android の大きなファイルのアップロードを修正しました。",
-      "デスクトップ版で EdgeEver の表示・非表示を切り替えるグローバルショートカットを設定できるようにし、大きな Antigravity AI アダプターのインストールを改善しました。",
-      "ダークモードとノートブックの選択表示を調整し、メンバーのアカウント日時を表示します。新規ノートブックの同期後の選択状態と AI の数式表示も改善しました。",
-      "API とプラグイン開発ガイドを拡充し、ポーランド語のプロジェクト概要を追加しました。"
+      "ノートブックメニューで受信トレイを削除できない理由を表示し、無効な削除項目をクリックした際に選択が切り替わる問題を修正しました。",
+      "デスクトップのエージェント設定で WorkBuddy の利用可能ステータス表記を統一しました。",
+      "アプリの依存関係を更新し、XML、ZIP、URI、CSS、SVG、およびデスクトップエージェントのパッケージ処理に関連する既知の脆弱性を修正しました。"
     ]
   }
 }
